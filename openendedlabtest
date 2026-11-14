@@ -1,0 +1,590 @@
+#include <iostream>
+#include <vector>
+#include <queue>
+#include <algorithm>
+#include <random>
+#include <chrono>
+#include <cmath>
+#include <set>
+using namespace std;
+
+mt19937 rng(
+    chrono::steady_clock::now().time_since_epoch().count()
+);
+
+struct Road {
+    int u, v;
+    int distance;
+    int capacity;
+    int type;
+    int load;
+};
+
+struct Edge {
+    int to;
+    int roadId;
+};
+
+struct Request {
+    int id;
+    int vehicles;
+    int source;
+    int destination;
+    int vehicleType;
+};
+
+struct Path {
+    vector<int> nodes;
+    vector<int> roadIds;
+    int distance;
+};
+
+struct State {
+    int current;
+    vector<int> nodes;
+    vector<int> roadIds;
+    int distance;
+};
+
+struct Compare {
+    bool operator()(const State& a, const State& b) {
+        return a.distance > b.distance;
+    }
+};
+
+vector<Road> roads;
+vector<vector<Edge>> graph;
+
+int K = 10;
+
+// Random number generator
+int randomNumber(int low, int high) {
+    uniform_int_distribution<int> dist(low, high);
+    return dist(rng);
+}
+
+// Vehicle names
+string vehicleName(int type) {
+    if (type == 1) return "Car";
+    if (type == 2) return "Bus";
+    if (type == 3) return "Truck";
+    return "Emergency";
+}
+
+// Road names
+string roadName(int type) {
+    if (type == 1) return "Highway";
+    if (type == 2) return "Main";
+    return "Local";
+}
+
+// Check vehicle-road compatibility
+bool isAllowed(int vehicleType, int roadType) {
+
+    if (vehicleType == 1) return true;
+
+    if (vehicleType == 2)
+        return roadType != 3;
+
+    if (vehicleType == 3)
+        return roadType != 3;
+
+    if (vehicleType == 4)
+        return true;
+
+    return false;
+}
+
+// Add an undirected road
+void addRoad(int u, int v, int distance,
+             int capacity, int type) {
+
+    int id = roads.size();
+
+    roads.push_back({
+        u, v, distance, capacity, type, 0
+    });
+
+    graph[u].push_back({v, id});
+    graph[v].push_back({u, id});
+}
+
+// Generate a connected road network
+void generateNetwork(int V, int E) {
+
+    roads.clear();
+    graph.assign(V, vector<Edge>());
+
+    set<pair<int, int>> used;
+
+    // Step 1: Generate a spanning tree
+    // This guarantees connectivity.
+    // Backbone roads are Highway or Main,
+    // so every vehicle type has a valid route.
+
+    for (int i = 1; i < V; i++) {
+
+        int parent = randomNumber(0, i - 1);
+
+        int distance = randomNumber(5, 30);
+        int capacity = randomNumber(30, 100);
+        int type = randomNumber(1, 2);
+
+        addRoad(parent, i, distance, capacity, type);
+
+        used.insert({parent, i});
+    }
+
+    // Step 2: Generate additional roads
+    while ((int)roads.size() < E) {
+
+        int u = randomNumber(0, V - 1);
+        int v = randomNumber(0, V - 1);
+
+        if (u == v) continue;
+
+        if (u > v) swap(u, v);
+
+        if (used.count({u, v})) continue;
+
+        int distance = randomNumber(5, 30);
+        int capacity = randomNumber(30, 100);
+        int type = randomNumber(1, 3);
+
+        addRoad(u, v, distance, capacity, type);
+
+        used.insert({u, v});
+    }
+}
+
+// Generate K shortest valid loopless paths
+vector<Path> findValidPaths(
+    int source,
+    int destination,
+    int vehicleType
+) {
+
+    priority_queue<State, vector<State>, Compare> pq;
+
+    State start;
+
+    start.current = source;
+    start.nodes.push_back(source);
+    start.distance = 0;
+
+    pq.push(start);
+
+    vector<Path> paths;
+
+    while (!pq.empty() && (int)paths.size() < K) {
+
+        State current = pq.top();
+        pq.pop();
+
+        // Destination reached
+        if (current.current == destination) {
+
+            Path p;
+
+            p.nodes = current.nodes;
+            p.roadIds = current.roadIds;
+            p.distance = current.distance;
+
+            paths.push_back(p);
+
+            continue;
+        }
+
+        // Explore adjacent roads
+        for (Edge e : graph[current.current]) {
+
+            int next = e.to;
+            int roadId = e.roadId;
+
+            // Avoid cycles
+            if (find(current.nodes.begin(),
+                     current.nodes.end(), next)
+                     != current.nodes.end()) {
+                continue;
+            }
+
+            // Check vehicle restriction
+            if (!isAllowed(vehicleType, roads[roadId].type))
+                continue;
+
+            State newState = current;
+
+            newState.current = next;
+
+            newState.nodes.push_back(next);
+            newState.roadIds.push_back(roadId);
+
+            newState.distance += roads[roadId].distance;
+
+            pq.push(newState);
+        }
+    }
+
+    return paths;
+}
+
+int getBottleneckCapacity(const Path& p) {
+
+    int bottleneck = 1000000000;
+
+    for (int id : p.roadIds) {
+
+        int remaining =
+            roads[id].capacity - roads[id].load;
+
+        bottleneck = min(bottleneck, remaining);
+    }
+
+    return bottleneck;
+}
+
+// Assign vehicles using SFCAR
+void assignRequest(
+    Request r,
+    double &totalDistance,
+    int &totalAssigned,
+    int &totalUnassigned
+) {
+
+    cout << "\nRequest " << r.id << endl;
+
+    cout << "Source: " << r.source
+         << " Destination: " << r.destination << endl;
+
+    cout << "Vehicle: " << vehicleName(r.vehicleType) << endl;
+
+    cout << "Requested Vehicles: " << r.vehicles << endl;
+
+    // Step 1: Find valid candidate paths
+    vector<Path> paths = findValidPaths(
+        r.source,
+        r.destination,
+        r.vehicleType
+    );
+
+    if (paths.empty()) {
+
+        cout << "No valid path available!\n";
+
+        totalUnassigned += r.vehicles;
+
+        return;
+    }
+
+    // Paths are generated in ascending distance order.
+    int remaining = r.vehicles;
+
+    // Step 2: Process paths from shortest to longest
+    for (int i = 0; i < paths.size(); i++) {
+
+        if (remaining == 0)
+            break;
+
+        Path p = paths[i];
+
+        // Step 3: Calculate bottleneck capacity
+        int available = getBottleneckCapacity(p);
+
+        if (available <= 0)
+            continue;
+
+        // Step 4: Assign maximum possible vehicles
+        int assigned = min(remaining, available);
+
+        // Step 5: Update every road on the path
+        for (int id : p.roadIds) {
+
+            roads[id].load += assigned;
+        }
+
+        // Step 6: Update remaining vehicles
+        remaining -= assigned;
+
+        totalAssigned += assigned;
+
+        // Step 7: Calculate total vehicle distance
+        totalDistance += assigned * p.distance;
+
+        // Display assignment
+        cout << "\nAssigned Vehicles: " << assigned << endl;
+
+        cout << "Path: ";
+
+        for (int node : p.nodes) {
+            cout << node << " ";
+        }
+
+        cout << "\nPath Distance: "
+             << p.distance << " km" << endl;
+
+        cout << "Bottleneck Capacity: "
+             << available << endl;
+
+        cout << "Remaining Vehicles: "
+             << remaining << endl;
+    }
+
+    totalUnassigned += remaining;
+
+    if (remaining > 0) {
+        cout << "\nUnassigned Vehicles: " << remaining << endl;
+    }
+}
+
+// Display road-wise traffic loads
+void displayRoadLoads() {
+
+    cout << "\n========== ROAD-WISE TRAFFIC LOAD ==========\n";
+
+    cout << "Road\tDistance\tCapacity\tLoad\tType\n";
+
+    for (int i = 0; i < roads.size(); i++) {
+
+        Road r = roads[i];
+
+        cout << r.u << "-" << r.v
+             << "\t" << r.distance
+             << "\t\t" << r.capacity
+             << "\t\t" << r.load
+             << "\t" << roadName(r.type)
+             << endl;
+    }
+}
+
+// Calculate performance metrics
+void calculateMetrics(double totalDistance,
+                      int totalAssigned,
+                      int totalUnassigned) {
+
+    double totalLoad = 0;
+    double totalCapacity = 0;
+
+    double maxLoad = 0;
+    double maxUtilization = 0;
+
+    int E = roads.size();
+
+    if (E == 0) return;
+
+    // Calculate total load and capacity
+    for (Road r : roads) {
+
+        totalLoad += r.load;
+        totalCapacity += r.capacity;
+
+        maxLoad = max(maxLoad, (double)r.load);
+
+        double utilization =
+            (double)r.load / r.capacity;
+
+        maxUtilization =
+            max(maxUtilization, utilization);
+    }
+
+    // Average road load
+    double averageLoad = totalLoad / E;
+
+    // Load variance
+    double variance = 0;
+
+    // Average normalized utilization
+    double averageUtilization = 0;
+
+    for (Road r : roads) {
+
+        double difference = r.load - averageLoad;
+
+        variance += difference * difference;
+
+        averageUtilization +=
+            (double)r.load / r.capacity;
+    }
+
+    variance /= E;
+
+    averageUtilization /= E;
+
+    // Congestion imbalance index
+    double congestionIndex = 0;
+
+    for (Road r : roads) {
+
+        double utilization =
+            (double)r.load / r.capacity;
+
+        double difference =
+            utilization - averageUtilization;
+
+        congestionIndex += difference * difference;
+    }
+
+    congestionIndex /= E;
+
+    // Network capacity utilization
+    double networkUtilization =
+        (totalLoad / totalCapacity) * 100;
+
+    cout << "\n========== PERFORMANCE METRICS ==========\n";
+
+    cout << "Maximum Road Load: "
+         << maxLoad << endl;
+
+    cout << "Average Road Load: "
+         << averageLoad << endl;
+
+    cout << "Load Variance: "
+         << variance << endl;
+
+    cout << "Network Capacity Utilization: "
+         << networkUtilization << "%" << endl;
+
+    cout << "Maximum Road Utilization: "
+         << maxUtilization * 100 << "%" << endl;
+
+    cout << "Congestion Imbalance Index: "
+         << congestionIndex << endl;
+
+    cout << "Total Travel Distance: "
+         << totalDistance << " vehicle-km" << endl;
+
+    cout << "Total Assigned Vehicles: "
+         << totalAssigned << endl;
+
+    cout << "Total Unassigned Vehicles: "
+         << totalUnassigned << endl;
+}
+
+// Generate transportation requests
+vector<Request> generateRequests(int V, int count) {
+
+    vector<Request> requests;
+
+    for (int i = 0; i < count; i++) {
+
+        Request r;
+
+        r.id = i + 1;
+
+        r.vehicles = randomNumber(10, 50);
+
+        r.source = randomNumber(0, V - 1);
+
+        r.destination = randomNumber(0, V - 1);
+
+        while (r.source == r.destination) {
+            r.destination = randomNumber(0, V - 1);
+        }
+
+        r.vehicleType = randomNumber(1, 4);
+
+        requests.push_back(r);
+    }
+
+    return requests;
+}
+
+int main() {
+
+    int V, E, timeSteps, requestCount;
+
+    cout << "Enter number of intersections: ";
+    cin >> V;
+
+    if (V < 2) {
+        cout << "At least 2 intersections are required.\n";
+        return 0;
+    }
+
+    cout << "Enter number of roads: ";
+    cin >> E;
+
+    long long maxEdges = 1LL * V * (V - 1) / 2;
+
+    if (E < V - 1 || E > maxEdges) {
+        cout << "Invalid number of roads!\n";
+        return 0;
+    }
+
+    cout << "Enter number of time steps: ";
+    cin >> timeSteps;
+
+    cout << "Enter requests per time step: ";
+    cin >> requestCount;
+
+    cout << "Enter K (candidate paths): ";
+    cin >> K;
+
+    if (timeSteps <= 0 || requestCount <= 0 || K <= 0) {
+        cout << "Invalid input!\n";
+        return 0;
+    }
+
+    // Generate road network
+    generateNetwork(V, E);
+
+    cout << "\n========== GENERATED ROAD NETWORK ==========\n";
+
+    for (int i = 0; i < roads.size(); i++) {
+
+        Road r = roads[i];
+
+        cout << r.u << " - " << r.v
+             << " | Distance: " << r.distance
+             << " | Capacity: " << r.capacity
+             << " | Type: " << roadName(r.type)
+             << endl;
+    }
+
+    // Process multiple time steps
+    for (int t = 1; t <= timeSteps; t++) {
+
+        cout << "\n\n========================================\n";
+
+        cout << "TIME STEP " << t << endl;
+
+        cout << "========================================\n";
+
+        // Independent snapshot:
+        // Reset road loads at each time step.
+        for (Road &r : roads) {
+            r.load = 0;
+        }
+
+        double totalDistance = 0;
+
+        int totalAssigned = 0;
+        int totalUnassigned = 0;
+
+        // Generate new requests
+        vector<Request> requests =
+            generateRequests(V, requestCount);
+
+        // Process each request
+        for (Request r : requests) {
+
+            assignRequest(
+                r,
+                totalDistance,
+                totalAssigned,
+                totalUnassigned
+            );
+        }
+
+        // Display final road loads
+        displayRoadLoads();
+
+
+        calculateMetrics(
+            totalDistance,
+            totalAssigned,
+            totalUnassigned
+        );
+    }
+
+    return 0;
+}
